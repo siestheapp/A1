@@ -1,71 +1,150 @@
-import pytesseract
-from PIL import Image
 import os
 import json
 from datetime import datetime
-from typing import Dict, Any
-import re
-from sqlalchemy.orm import Session
-from . import models
-from .models import Department, Category, UnitSystem
+from typing import Dict, Any, List
+import base64
+import requests
+from io import BytesIO
+from PIL import Image
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SizeGuideProcessor:
     def __init__(self, upload_dir: str = "uploads"):
         self.upload_dir = upload_dir
         os.makedirs(upload_dir, exist_ok=True)
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         
-        # Common words to exclude from brand names
-        self.exclude_words = {
-            'size', 'chart', 'guide', 'measurement', 'men', 'women', 'kids', 'children',
-            'tops', 'bottoms', 'dresses', 'shirts', 'pants', 'regular', 'slim', 'tall',
-            'petite', 'chest', 'neck', 'waist', 'bust', 'hip', 'arm', 'length', 'inches',
-            'centimeters', 'cm', 'in', 'kg', 'lbs', 'pounds', 'kilograms', 'help', 'size',
-            'conversion', 'measuring', 'guide', 'how', 'to', 'measure', 'yourself',
-            'find', 'your', 'perfect', 'fit', 'international', 'sizing', 'chart'
-        }
-        
-        # Common brand name patterns
-        self.brand_patterns = [
-            r'^[A-Z][a-zA-Z]+$',  # Single word with capital first letter
-            r'^[A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+$',  # Two words with capital first letters
-            r'^[A-Z][a-zA-Z]+ & [A-Z][a-zA-Z]+$',  # Two words with & between
-            r'^[A-Z][a-zA-Z]+\.$',  # Single word with period
-            r'^[A-Z][a-zA-Z]+ [A-Z][a-zA-Z]+\.$',  # Two words with period
-        ]
+        # Load training examples if they exist
+        self.training_examples = self._load_training_examples()
 
-    def process_image(self, image: Image.Image, db: Session, brand_name: str, department: Department, category: Category, unit_system: UnitSystem) -> Dict[str, Any]:
+    async def process_image(self, image_path: str) -> Dict[str, Any]:
         """
-        Process the size guide image using user-provided metadata
+        Process the size guide image using GPT-4 Vision
         """
-        # Convert image to grayscale for better OCR
-        gray_image = image.convert('L')
-        
-        # Perform OCR
-        text = pytesseract.image_to_string(gray_image)
-        
-        # Debug: Print raw OCR text
-        print("\nRaw OCR Text:")
-        print("=" * 50)
-        print(text)
-        print("=" * 50)
-        
-        # Process the extracted text
-        measurements = self._parse_measurements(text)
-        
-        # Try to match brand with existing brands
-        brand_id = self._match_brand(brand_name, db)
-        
-        # Determine product type from department
-        product_type = f"{department.value} Clothing"
+        # Use GPT-4 Vision for analysis
+        result = await self._analyze_with_gpt4_vision(image_path)
         
         return {
-            "brand_name": brand_name,
-            "brand_id": brand_id,
-            "product_type": product_type,
-            "measurements": measurements,
-            "raw_text": text,
-            "ocr_confidence": self._calculate_ocr_confidence(text)
+            "measurements": result.get("measurements", {}),
+            "confidence": result.get("confidence", 0.0),
+            "ai_analysis": result
         }
+
+    async def _analyze_with_gpt4_vision(self, image_path: str) -> Dict[str, Any]:
+        """
+        Analyze the size guide image using GPT-4 Vision with training examples
+        """
+        # Convert image to base64
+        with open(image_path, "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode('utf-8')
+        
+        # Prepare system message with training examples
+        system_message = """You are an expert at analyzing clothing size guides. 
+        Extract all measurements and format them consistently.
+        Pay attention to:
+        1. Size labels (XS, S, M, L, XL, etc. or numeric sizes)
+        2. Measurement types (chest, waist, hip, etc.)
+        3. Categories (Regular, Slim, Tall, etc.)
+        4. Unit systems (cm, inches)
+        5. Measurement ranges (e.g., "32-34" means min=32, max=34)"""
+
+        # Add training examples if available
+        if self.training_examples:
+            system_message += "\n\nHere are some examples of correct extractions:\n"
+            for example in self.training_examples:
+                system_message += f"\nExample {example['id']}:\n{json.dumps(example['output'], indent=2)}"
+
+        # Prepare the API request
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.openai_api_key}"
+        }
+        
+        payload = {
+            "model": "gpt-4-vision-preview",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": system_message
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this size guide and extract all measurements. Format the response as a JSON object with: {measurements: {sizes: [{size: string, measurements: {type: value}}], categories: [], measurement_types: []}, confidence: float}"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_data}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 1000
+        }
+        
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            
+            # Parse the response
+            result = response.json()
+            content = result['choices'][0]['message']['content']
+            
+            # Extract the JSON from the content
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                # If GPT-4 didn't return valid JSON, extract it from the text
+                import re
+                json_str = re.search(r'{.*}', content, re.DOTALL)
+                if json_str:
+                    return json.loads(json_str.group())
+                return {"measurements": {}, "confidence": 0.0}
+                
+        except Exception as e:
+            print(f"Error in GPT-4 Vision analysis: {str(e)}")
+            return {"measurements": {}, "confidence": 0.0}
+
+    def add_training_example(self, image_path: str, correct_output: Dict[str, Any]) -> None:
+        """
+        Add a new training example to improve future analyses
+        """
+        example = {
+            "id": len(self.training_examples) + 1,
+            "image_path": image_path,
+            "output": correct_output,
+            "added_at": datetime.utcnow().isoformat()
+        }
+        
+        self.training_examples.append(example)
+        self._save_training_examples()
+
+    def _load_training_examples(self) -> List[Dict[str, Any]]:
+        """
+        Load training examples from disk
+        """
+        try:
+            with open('training_examples.json', 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+    def _save_training_examples(self) -> None:
+        """
+        Save training examples to disk
+        """
+        with open('training_examples.json', 'w') as f:
+            json.dump(self.training_examples, f, indent=2)
 
     def save_image(self, image: Image.Image, filename: str) -> str:
         """
@@ -75,162 +154,4 @@ class SizeGuideProcessor:
         safe_filename = f"{timestamp}_{filename}"
         filepath = os.path.join(self.upload_dir, safe_filename)
         image.save(filepath)
-        return filepath
-
-    def _parse_measurements(self, text: str) -> Dict[str, Any]:
-        """
-        Parse the extracted text to identify size measurements
-        """
-        measurements = {
-            "sizes": [],
-            "categories": [],
-            "measurement_types": []
-        }
-        
-        lines = text.split('\n')
-        current_category = None
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # Detect measurement categories (e.g., REGULAR, SLIM, TALL)
-            if any(cat in line.upper() for cat in ['REGULAR', 'SLIM', 'TALL', 'PETITE']):
-                current_category = line.strip()
-                if current_category not in measurements["categories"]:
-                    measurements["categories"].append(current_category)
-                continue
-            
-            # Detect measurement types (e.g., Chest, Neck, Waist)
-            if any(measure in line.lower() for measure in ['chest', 'neck', 'waist', 'bust', 'hip', 'arm']):
-                measurements["measurement_types"].append(line.strip())
-                continue
-            
-            # Parse size measurements
-            # Look for patterns like "xs 32-34 13-13.5 26-28 31-32"
-            size_match = re.match(r'^([A-Za-z]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', line)
-            if size_match:
-                size_data = {
-                    "size": size_match.group(1).upper(),
-                    "measurements": {
-                        "chest": size_match.group(2),
-                        "neck": size_match.group(3),
-                        "waist": size_match.group(4),
-                        "arm_length": size_match.group(5)
-                    }
-                }
-                measurements["sizes"].append(size_data)
-        
-        return measurements
-
-    def _extract_brand_name(self, text: str) -> str:
-        """
-        Extract brand name from the text using improved detection logic
-        """
-        lines = text.split('\n')
-        potential_brands = []
-        
-        # Debug: Print all lines for brand detection
-        print("\nBrand Detection Lines:")
-        print("=" * 50)
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            print(f"Processing line: '{line}'")
-            
-            # Skip lines that are too short or contain common size guide words
-            if len(line) < 2 or any(word in line.lower() for word in self.exclude_words):
-                print(f"Skipping: Contains excluded word or too short")
-                continue
-                
-            # Skip lines that are just numbers or measurements
-            if re.match(r'^[\d\s\-\.]+$', line):
-                print(f"Skipping: Numbers only")
-                continue
-                
-            # Skip lines that look like size measurements
-            if re.match(r'^[A-Za-z]+\s+[\d\s\-\.]+$', line):
-                print(f"Skipping: Size measurement")
-                continue
-                
-            # Skip lines that are just categories or measurement types
-            if any(cat in line.upper() for cat in ['REGULAR', 'SLIM', 'TALL', 'PETITE']):
-                print(f"Skipping: Category")
-                continue
-                
-            # Skip lines that are just measurement units
-            if any(unit in line.lower() for unit in ['inches', 'centimeters', 'cm', 'in']):
-                print(f"Skipping: Measurement unit")
-                continue
-                
-            # Check if the line matches any brand name patterns
-            if any(re.match(pattern, line) for pattern in self.brand_patterns):
-                print(f"Found matching brand pattern: {line}")
-                potential_brands.insert(0, line)  # Add to front of list
-                continue
-                
-            # Add other potential brand names
-            print(f"Adding as potential brand: {line}")
-            potential_brands.append(line)
-        
-        print("\nPotential brands found:", potential_brands)
-        print("=" * 50)
-        
-        # If we found potential brand names, return the first one
-        if potential_brands:
-            # Clean up the brand name
-            brand = potential_brands[0]
-            # Remove any trailing/leading special characters
-            brand = re.sub(r'^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$', '', brand)
-            # Replace multiple spaces with single space
-            brand = re.sub(r'\s+', ' ', brand)
-            return brand.strip()
-            
-        return "Unknown Brand"
-
-    def _match_brand(self, brand_name: str, db: Session) -> int:
-        """
-        Try to match the extracted brand name with existing brands in the database
-        """
-        # First try exact match
-        brand = db.query(models.Brand).filter(models.Brand.name == brand_name).first()
-        if brand:
-            return brand.id
-            
-        # Then try case-insensitive match
-        brand = db.query(models.Brand).filter(models.Brand.name.ilike(brand_name)).first()
-        if brand:
-            return brand.id
-            
-        # Then try partial match
-        brand = db.query(models.Brand).filter(models.Brand.name.ilike(f"%{brand_name}%")).first()
-        if brand:
-            return brand.id
-            
-        return None
-
-    def _calculate_ocr_confidence(self, text: str) -> float:
-        """
-        Calculate a confidence score for the OCR results
-        """
-        # This is a simple implementation - could be made more sophisticated
-        confidence = 0.0
-        
-        # Check for presence of key elements
-        if any(size in text.lower() for size in ['xs', 's', 'm', 'l', 'xl', 'xxl']):
-            confidence += 0.3
-            
-        if any(measure in text.lower() for measure in ['chest', 'waist', 'hip']):
-            confidence += 0.3
-            
-        if any(unit in text.lower() for unit in ['cm', 'in', 'mm']):
-            confidence += 0.2
-            
-        if any(cat in text.lower() for cat in ['regular', 'slim', 'tall']):
-            confidence += 0.2
-            
-        return min(confidence, 1.0) 
+        return filepath 

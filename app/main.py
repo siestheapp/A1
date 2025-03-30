@@ -13,8 +13,9 @@ import logging
 from .auth import get_current_username
 from . import models, database
 from .services import SizeGuideProcessor
-from .database import get_db
+from .database import get_db, SessionLocal
 from .models import Department, Category, UnitSystem, ImportStatus
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,27 +23,18 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="A1 Size Guide Processor")
 
-# Add CORS middleware with specific origins
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        # Add your colleague's domain/IP here
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount the uploads directory
+# Mount static files
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-# Set up templates
 templates = Jinja2Templates(directory="app/templates")
-
-# Initialize the processor
-processor = SizeGuideProcessor()
 
 @app.get("/", response_class=HTMLResponse)
 async def upload_form(request: Request):
@@ -88,7 +80,7 @@ async def upload_size_guide(
     unit_system: str = Form(...)
 ):
     """
-    Upload a size guide image with metadata
+    Upload and process a size guide image using AI-enhanced analysis
     """
     if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         raise HTTPException(status_code=400, detail="File must be an image")
@@ -96,32 +88,57 @@ async def upload_size_guide(
     try:
         processor = SizeGuideProcessor()
         
-        # Process the image and extract data
-        image_path = await processor.save_image(file)
-        measurements, ocr_text, confidence = await processor.process_image(image_path)
+        # Save the uploaded file
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{file.filename}"
+        image_path = os.path.join("uploads", filename)
+        image.save(image_path)
         
-        # Create new automated import record
+        # Process the image with AI enhancement
+        result = await processor.process_image(image_path)
+        
+        # Create automated import record
+        db = SessionLocal()
         import_record = models.AutomatedImport(
             brand_name=brand_name,
             department=department,
             category=category,
             unit_system=UnitSystem[unit_system],
-            measurements=measurements,
-            ocr_text=ocr_text,
-            ocr_confidence=confidence,
+            measurements=result["measurements"],
+            ocr_text=result["ocr_text"],
+            ocr_confidence=result["confidence"],
             image_path=image_path,
             status=ImportStatus.PENDING,
             created_at=datetime.utcnow(),
-            created_by=username
+            created_by=username,
+            extra_data={"ai_analysis": result["ai_analysis"]}
         )
         
-        db = SessionLocal()
+        # Try to match with existing brand
+        brand = db.query(models.Brand).filter(models.Brand.name.ilike(brand_name)).first()
+        if brand:
+            import_record.brand_id = brand.id
+        
         db.add(import_record)
         db.commit()
         db.refresh(import_record)
+        
+        # If confidence is high enough, automatically approve
+        if result["confidence"] > 0.9:
+            import_record.status = ImportStatus.APPROVED
+            import_record.processed_at = datetime.utcnow()
+            db.commit()
+        
         db.close()
         
-        return {"message": "Size guide uploaded successfully", "import_id": import_record.id}
+        return {
+            "message": "Size guide processed successfully",
+            "import_id": import_record.id,
+            "status": import_record.status,
+            "confidence": result["confidence"]
+        }
         
     except Exception as e:
         logger.error(f"Error processing upload: {str(e)}")
@@ -241,4 +258,43 @@ def list_brands(
             "name": brand.name
         }
         for brand in brands
-    ] 
+    ]
+
+@app.post("/train")
+async def add_training_example(
+    username: str = Depends(get_current_username),
+    file: UploadFile = File(...),
+    correct_output: str = Form(...),  # JSON string of correct measurements
+):
+    """
+    Add a new training example to improve the AI's accuracy
+    """
+    if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        raise HTTPException(status_code=400, detail="File must be an image")
+    
+    try:
+        # Parse the correct output
+        correct_measurements = json.loads(correct_output)
+        
+        # Save the image
+        processor = SizeGuideProcessor()
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"training_{timestamp}_{file.filename}"
+        image_path = os.path.join("uploads", filename)
+        image.save(image_path)
+        
+        # Add as training example
+        processor.add_training_example(image_path, correct_measurements)
+        
+        return {
+            "message": "Training example added successfully",
+            "image_path": image_path
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON format for correct_output")
+    except Exception as e:
+        logger.error(f"Error adding training example: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 
