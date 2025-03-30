@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A1 Size Guide Upload</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-2xl mx-auto bg-white rounded-lg shadow-md p-6">
+            <h1 class="text-2xl font-bold text-gray-800 mb-6">Upload Size Guide</h1>
+            
+            <form id="uploadForm" class="space-y-4">
+                <!-- Brand Name -->
+                <div>
+                    <label for="brand_name" class="block text-sm font-medium text-gray-700">Brand Name</label>
+                    <input type="text" id="brand_name" name="brand_name" required
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                </div>
+
+                <!-- Department -->
+                <div>
+                    <label for="department" class="block text-sm font-medium text-gray-700">Department</label>
+                    <select id="department" name="department" required
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        <option value="">Select Department</option>
+                        <option value="Men">Men</option>
+                        <option value="Women">Women</option>
+                        <option value="Unisex">Unisex</option>
+                    </select>
+                </div>
+
+                <!-- Category -->
+                <div>
+                    <label for="category" class="block text-sm font-medium text-gray-700">Category</label>
+                    <select id="category" name="category" required
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        <option value="">Select Category</option>
+                        <option value="Tops">Tops</option>
+                        <option value="Bottoms">Bottoms</option>
+                        <option value="Dresses">Dresses</option>
+                        <option value="Outerwear">Outerwear</option>
+                        <option value="Suits">Suits</option>
+                        <option value="Activewear">Activewear</option>
+                        <option value="Swimwear">Swimwear</option>
+                        <option value="Underwear">Underwear</option>
+                        <option value="Accessories">Accessories</option>
+                    </select>
+                </div>
+
+                <!-- Unit System -->
+                <div>
+                    <label for="unit_system" class="block text-sm font-medium text-gray-700">Unit System</label>
+                    <select id="unit_system" name="unit_system" required
+                            class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
+                        <option value="">Select Unit System</option>
+                        <option value="METRIC">Metric (cm, kg)</option>
+                        <option value="IMPERIAL">Imperial (in, lbs)</option>
+                    </select>
+                </div>
+
+                <!-- File Upload -->
+                <div>
+                    <label for="file" class="block text-sm font-medium text-gray-700">Size Guide Image</label>
+                    <input type="file" id="file" name="file" accept="image/*" required
+                           class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                </div>
+
+                <!-- Submit Button -->
+                <div>
+                    <button type="submit"
+                            class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        Upload Size Guide
+                    </button>
+                </div>
+            </form>
+
+            <!-- Status Message -->
+            <div id="status" class="mt-4 hidden">
+                <div class="rounded-md p-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <p id="statusMessage" class="text-sm font-medium text-green-800"></p>
+                            <a id="viewLink" href="#" class="text-sm font-medium text-blue-600 hover:text-blue-800 hidden">View Uploaded Size Guide →</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            formData.append('file', document.getElementById('file').files[0]);
+            formData.append('brand_name', document.getElementById('brand_name').value);
+            formData.append('department', document.getElementById('department').value);
+            formData.append('category', document.getElementById('category').value);
+            formData.append('unit_system', document.getElementById('unit_system').value);
+
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                
+                // Show status message
+                const statusDiv = document.getElementById('status');
+                const statusMessage = document.getElementById('statusMessage');
+                const viewLink = document.getElementById('viewLink');
+                statusDiv.classList.remove('hidden');
+                
+                if (response.ok) {
+                    statusMessage.textContent = 'Size guide uploaded successfully!';
+                    statusMessage.parentElement.parentElement.classList.add('bg-green-50');
+                    statusMessage.parentElement.parentElement.classList.remove('bg-red-50');
+                    
+                    // Show view link
+                    viewLink.href = `/view/${result.import_id}`;
+                    viewLink.classList.remove('hidden');
+                    
+                    e.target.reset();
+                } else {
+                    statusMessage.textContent = `Error: ${result.detail}`;
+                    statusMessage.parentElement.parentElement.classList.add('bg-red-50');
+                    statusMessage.parentElement.parentElement.classList.remove('bg-green-50');
+                    viewLink.classList.add('hidden');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                const statusDiv = document.getElementById('status');
+                const statusMessage = document.getElementById('statusMessage');
+                const viewLink = document.getElementById('viewLink');
+                statusDiv.classList.remove('hidden');
+                statusMessage.textContent = 'Error uploading size guide. Please try again.';
+                statusMessage.parentElement.parentElement.classList.add('bg-red-50');
+                statusMessage.parentElement.parentElement.classList.remove('bg-green-50');
+                viewLink.classList.add('hidden');
+            }
+        });
+    </script>
+</body>
+</html> 
