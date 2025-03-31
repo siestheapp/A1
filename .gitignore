@@ -37,3 +37,23 @@ ENV/
 
 # Environment variables
 .env
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Uploads and Data
+uploads/
+uploads/size_guides/
+*.jpg
+*.jpeg
+*.png
+*.gif
+
+# Database
+database.ini
+*.db
+*.sqlite3
+
+# Migrations
+migrations/

@@ -40,19 +40,87 @@ class SizeGuideProcessor:
         with open(image_path, "rb") as image_file:
             image_data = base64.b64encode(image_file.read()).decode('utf-8')
         
-        # Prepare system message with training examples
-        system_message = """You are an expert at analyzing clothing size guides. 
-        Extract all measurements and format them consistently.
-        Pay attention to:
-        1. Size labels (XS, S, M, L, XL, etc. or numeric sizes)
-        2. Measurement types (chest, waist, hip, etc.)
-        3. Categories (Regular, Slim, Tall, etc.)
-        4. Unit systems (cm, inches)
-        5. Measurement ranges (e.g., "32-34" means min=32, max=34)"""
+        # Prepare system message with enhanced instructions
+        system_message = """You are an expert at analyzing clothing size guides for the Tailor app, which helps users find clothes that fit them perfectly. Your task is to extract and standardize measurements with perfect accuracy for comparison across different brands.
+
+Key Instructions:
+1. Size Labels and Correlations:
+   - Extract ALL size variations (XS/S/M/L/XL, numeric sizes, etc.)
+   - Document size correlations (e.g., "US 4 = UK 8 = EU 36")
+   - Note fit variations (Regular/Slim/Relaxed)
+   - Maintain brand-specific size formatting
+
+2. Critical Measurements:
+   - Primary measurements (MUST HAVE):
+     * Chest/Bust: Always in range format (e.g., "38-40")
+     * Shoulders: Measure point to point
+     * Length: Total garment length
+   - Secondary measurements (if available):
+     * Neck: Circumference
+     * Sleeve: From shoulder seam
+     * Waist: Natural waistline
+     * Hip: Fullest part
+   - Ensure all measurements are in the original unit system
+
+3. Measurement Validation:
+   - Verify size progression logic (each size should increase consistently)
+   - Check measurement relationships (chest > waist for most garments)
+   - Validate measurement ranges (e.g., typical chest range is 2-4 units)
+   - Flag any measurements outside normal ranges
+
+4. Fit Information:
+   - Note garment type and intended fit
+   - Capture measurement points ("chest measured flat", "waist at natural line")
+   - Record any stretch/fabric allowances
+   - Document any brand-specific fit notes
+
+5. Quality Control:
+   - Assign confidence scores to each measurement (0.0-1.0)
+   - Higher confidence for clearly stated measurements
+   - Lower confidence for implied or calculated measurements
+   - Flag potential OCR errors or unclear values
+
+Output Format:
+{
+  "measurements": {
+    "sizes": [
+      {
+        "label": string,  // Original size label
+        "type": string,  // Regular/Slim/Relaxed
+        "correlations": {  // Size correlations
+          "US": string,
+          "UK": string,
+          "EU": string
+        },
+        "measurements": {
+          "chest": {
+            "range": string,  // "min-max" format
+            "point": string,  // How to measure
+            "confidence": float  // 0.0-1.0
+          },
+          // ... other measurements
+        }
+      }
+    ],
+    "fit_notes": {
+      "garment_type": string,
+      "intended_fit": string,
+      "fabric_properties": string
+    },
+    "measurement_points": {},  // How/where to measure
+    "quality_flags": []  // Warnings about unusual values
+  },
+  "metadata": {
+    "brand_name": string,
+    "unit_system": string,  // "cm" or "inches"
+    "confidence": float,  // Overall confidence
+    "size_type": string  // Letter/Number/Mixed
+  }
+}"""
 
         # Add training examples if available
         if self.training_examples:
-            system_message += "\n\nHere are some examples of correct extractions:\n"
+            system_message += "\n\nReference Examples:\n"
             for example in self.training_examples:
                 system_message += f"\nExample {example['id']}:\n{json.dumps(example['output'], indent=2)}"
 
@@ -74,7 +142,7 @@ class SizeGuideProcessor:
                     "content": [
                         {
                             "type": "text",
-                            "text": "Analyze this size guide and extract all measurements. Format the response as a JSON object with: {measurements: {sizes: [{size: string, measurements: {type: value}}], categories: [], measurement_types: []}, confidence: float}"
+                            "text": "Analyze this size guide with perfect accuracy. Extract all measurements and format them according to the specified structure. Pay special attention to measurement ranges, size variants, and any special instructions."
                         },
                         {
                             "type": "image_url",
@@ -85,7 +153,7 @@ class SizeGuideProcessor:
                     ]
                 }
             ],
-            "max_tokens": 1000
+            "max_tokens": 1500
         }
         
         try:
